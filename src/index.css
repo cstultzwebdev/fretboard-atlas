@@ -1,0 +1,50 @@
+@import url('https://fonts.googleapis.com/css2?family=Spectral:wght@500;600&family=JetBrains+Mono:wght@400;500;700&family=Work+Sans:wght@400;500&display=swap');
+
+:root {
+  /* GitHub Dark-inspired palette */
+  --case: #010409;
+  --case-vignette: #010409;
+  --wood-hi: #0d1117;
+  --wood-lo: #010409;
+  --grain: rgba(0, 0, 0, 0);
+  --binding: #6e7681;
+  --fret-hi: #30363d;
+  --fret-lo: #21262d;
+  --brass: #58a6ff;
+  --brass-dim: #1f6feb;
+  --inlay: #58a6ff;
+  --inlay-shine: #d2ecff;
+  --wound: #d29922;
+  --wound-dark: #9a6a03;
+  --plain: #c9d1d9;
+  --plain-dark: #8b949e;
+  --chip-natural-bg: #a5d6ff;
+  --chip-natural-ink: #0d1117;
+  --chip-acc-bg: #21262d;
+  --chip-acc-ring: #388bfd;
+  --chip-acc-ink: #cae8ff;
+  --paper-ink: #e6edf3;
+  --paper-ink-soft: #8b949e;
+  --status-correct: #2ea043;
+  --status-correct-hi: #56d364;
+  --status-correct-ink: #0d1117;
+  --status-incorrect: #f85149;
+  --status-incorrect-bg: #4c1210;
+  --status-incorrect-ink: #ffa198;
+  --cell-fill: #0d1117;
+  --chord-root-bg: #ff8c1a;
+  --chord-root-ink: #1a0f00;
+  --chord-root-border: #6b3200;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  background: radial-gradient(ellipse at 50% -10%, var(--case-vignette), var(--case) 60%);
+  color: var(--paper-ink);
+  font-family: 'Work Sans', system-ui, sans-serif;
+  min-height: 100vh;
+  margin: 0;
+}
