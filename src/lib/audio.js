@@ -20,15 +20,36 @@
 let ctx = null
 let master = null
 
+const MASTER_GAIN = 0.35
+let muted = false
+
+// what a muted pluck hands back, so callers can still stop() it blindly
+const SILENT_NOTE = { stop() {} }
+
 function getContext() {
   if (!ctx) {
     ctx = new (window.AudioContext || window.webkitAudioContext)()
     master = ctx.createGain()
-    master.gain.value = 0.35
+    master.gain.value = muted ? 0 : MASTER_GAIN
     master.connect(ctx.destination)
   }
   if (ctx.state === 'suspended') ctx.resume()
   return ctx
+}
+
+export function isMuted() {
+  return muted
+}
+
+// Muting closes the master gain rather than only skipping new notes, so
+// anything still ringing when it's hit fades out instead of playing on.
+export function setMuted(value) {
+  muted = value
+  if (!ctx || !master) return
+  const now = ctx.currentTime
+  master.gain.cancelScheduledValues(now)
+  master.gain.setValueAtTime(master.gain.value, now)
+  master.gain.linearRampToValueAtTime(muted ? 0 : MASTER_GAIN, now + 0.05)
 }
 
 function karplusVoice(freq, sampleRate, totalSamples, damping) {
@@ -48,6 +69,9 @@ function karplusVoice(freq, sampleRate, totalSamples, damping) {
 }
 
 export function pluck(freq, { duration = 1.4, damping = 0.996, bright = true } = {}) {
+  // synthesising a note nobody can hear is pure work, so don't
+  if (muted) return SILENT_NOTE
+
   const audioCtx = getContext()
   const sampleRate = audioCtx.sampleRate
   const totalSamples = Math.floor(duration * sampleRate)

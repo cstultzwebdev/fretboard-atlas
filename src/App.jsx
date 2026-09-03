@@ -15,7 +15,7 @@ import {
   FRET_COUNT,
   CHROMATIC,
 } from './lib/notes.js'
-import { pluck } from './lib/audio.js'
+import { pluck, isMuted, setMuted } from './lib/audio.js'
 import KEY_VIBES from './lib/keyVibes.js'
 import KEY_AFFECT from './lib/keyAffect.js'
 import KEY_TABS from './lib/keyTabs.js'
@@ -24,13 +24,44 @@ import TabChart from './components/TabChart.jsx'
 import { diatonicChords } from './lib/chordShapes.js'
 import ChordDiagram from './components/ChordDiagram.jsx'
 import ALL_INTERVALS, { randomInterval } from './lib/intervals.js'
+import { SCALES, scaleIndices, scalePositions, stepPattern } from './lib/scales.js'
+import SCALE_CHARACTER from './lib/scaleCharacter.js'
+import MODES, { spellMode } from './lib/modes.js'
+import ScaleDiagram from './components/ScaleDiagram.jsx'
+import ShapeGrid, { ascendingNotes, cellKey, SHAPE_NOTE_GAP_MS } from './components/ShapeGrid.jsx'
 import './App.css'
+
+function MuteToggle() {
+  const [muted, setMutedState] = useState(isMuted)
+
+  function toggle() {
+    const next = !muted
+    setMuted(next)
+    setMutedState(next)
+  }
+
+  return (
+    <button
+      className={muted ? 'mute-toggle muted' : 'mute-toggle'}
+      onClick={toggle}
+      aria-pressed={muted}
+      aria-label={muted ? 'Unmute all sound' : 'Mute all sound'}
+    >
+      <span className="mute-toggle-icon" aria-hidden="true">
+        ♪
+      </span>
+      {muted ? 'Muted' : 'Sound'}
+    </button>
+  )
+}
 
 export default function App() {
   const [tab, setTab] = useState('reference')
 
   return (
-    <div className="wrap">
+    <>
+      <MuteToggle />
+      <div className="wrap">
       <header>
         <p className="kicker">Reference Chart — Six-String, Standard Tuning</p>
         <h1>Fretboard Atlas</h1>
@@ -68,6 +99,22 @@ export default function App() {
           >
             Intervals
           </button>
+          <button
+            role="tab"
+            aria-selected={tab === 'scales'}
+            className={tab === 'scales' ? 'active' : ''}
+            onClick={() => setTab('scales')}
+          >
+            Scales
+          </button>
+          <button
+            role="tab"
+            aria-selected={tab === 'modes'}
+            className={tab === 'modes' ? 'active' : ''}
+            onClick={() => setTab('modes')}
+          >
+            Modes
+          </button>
         </div>
 
         {tab === 'quiz' && (
@@ -90,13 +137,29 @@ export default function App() {
             on the neck — any occurrence of that note counts, not just the nearest one.
           </p>
         )}
+        {tab === 'scales' && (
+          <p className="sub">
+            Pick a root and a scale to see every note of it light up across the neck, then work
+            through the position shapes that scale falls into in that key.
+          </p>
+        )}
+        {tab === 'modes' && (
+          <p className="sub">
+            The seven modes of the major scale — the same seven notes each time, started from a
+            different degree, which changes which note feels like home. Play them all from one
+            root to hear what separates them.
+          </p>
+        )}
       </header>
 
       {tab === 'reference' && <ReferenceTab />}
       {tab === 'quiz' && <QuizTab />}
       {tab === 'keys' && <KeysTab />}
       {tab === 'intervals' && <IntervalsTab />}
-    </div>
+      {tab === 'scales' && <ScalesTab />}
+      {tab === 'modes' && <ModesTab />}
+      </div>
+    </>
   )
 }
 
@@ -709,6 +772,443 @@ function IntervalReferenceMode() {
           )
         }}
       />
+    </>
+  )
+}
+
+const SCALE_NOTE_GAP_MS = 380
+
+function ScalesTab() {
+  const [root, setRoot] = useState(0) // pitch class, defaults to C
+  const [scaleType, setScaleType] = useState('major')
+  const [isPlaying, setIsPlaying] = useState(false)
+  const [playingStep, setPlayingStep] = useState(null)
+  const [selectedPosition, setSelectedPosition] = useState(null)
+  const [boxStep, setBoxStep] = useState(null) // the note a shape is sounding right now
+  const [playingPosition, setPlayingPosition] = useState(null) // the one shape allowed to sound
+  const timeoutsRef = useRef([])
+  const activeNotesRef = useRef([])
+
+  useEffect(() => () => stopSequence(), [])
+
+  const scale = SCALES[scaleType]
+  const character = SCALE_CHARACTER[scaleType]
+  const rootName = CHROMATIC[root]
+  const spelled = scale.spell(rootName)
+  // how the tonic is actually written in this scale — A# major is read as Bb
+  const spelledRoot = spelled[0]
+  const pattern = stepPattern(scale.steps)
+  // the notes as you'd play them up, landing back on the root an octave up,
+  // so every step of the pattern has a note on each side of it
+  const climb = [...spelled, spelledRoot]
+  const scaleSet = scaleIndices(root, scale.steps)
+  const positions = scalePositions(root, scale)
+  // the neck here runs as far as the highest shape reaches, so no position
+  // box ends up pointing at frets the board doesn't show
+  const boardFrets = Math.max(FRET_COUNT, ...positions.map((p) => p.endFret))
+  const playingPitch = playingStep !== null ? (root + scale.steps[playingStep]) % 12 : null
+
+  // a selected position box takes over the neck, the same way a selected
+  // chord does in the Keys tab — everything outside the box fades out
+  const boxNotes = selectedPosition !== null ? positions[selectedPosition - 1].notes : null
+  const boxCells = boxNotes ? new Set(boxNotes.map((n) => `${n.stringIndex}:${n.fret}`)) : null
+  const stepCell = boxStep ? `${boxStep.stringIndex}:${boxStep.fret}` : null
+
+  function stopSequence() {
+    timeoutsRef.current.forEach(clearTimeout)
+    timeoutsRef.current = []
+    activeNotesRef.current.forEach((n) => n.stop())
+    activeNotesRef.current = []
+    setIsPlaying(false)
+    setPlayingStep(null)
+  }
+
+  function playSequence() {
+    setIsPlaying(true)
+    const baseMidi = 60 + root
+    scale.steps.forEach((step, i) => {
+      const t = setTimeout(() => {
+        setPlayingStep(i)
+        activeNotesRef.current.push(pluck(frequencyForMidi(baseMidi + step)))
+      }, i * SCALE_NOTE_GAP_MS)
+      timeoutsRef.current.push(t)
+    })
+    const endT = setTimeout(() => {
+      activeNotesRef.current = []
+      timeoutsRef.current = []
+      setIsPlaying(false)
+      setPlayingStep(null)
+    }, scale.steps.length * SCALE_NOTE_GAP_MS)
+    timeoutsRef.current.push(endT)
+  }
+
+  // dropping the position also silences whichever shape was still running,
+  // so nothing keeps sounding against a new root, scale, or the scale player
+  function clearPosition() {
+    setSelectedPosition(null)
+    setBoxStep(null)
+    setPlayingPosition(null)
+  }
+
+  function togglePlay() {
+    if (isPlaying) {
+      stopSequence()
+    } else {
+      clearPosition()
+      playSequence()
+    }
+  }
+
+  function selectRoot(pitchClass) {
+    stopSequence()
+    clearPosition()
+    setRoot(pitchClass)
+  }
+
+  function selectScaleType(type) {
+    stopSequence()
+    clearPosition()
+    setScaleType(type)
+  }
+
+  // no toggle-off here: clicking a shape always plays it, and the neck has to
+  // stay on that shape to follow along — "Clear selection" is the way out
+  function selectPosition(position) {
+    setSelectedPosition(position)
+  }
+
+  return (
+    <>
+      <div className="tabs interval-mode-tabs" role="tablist" aria-label="Scale formula">
+        {Object.values(SCALES).map((s) => (
+          <button
+            key={s.key}
+            role="tab"
+            aria-selected={scaleType === s.key}
+            className={scaleType === s.key ? 'active' : ''}
+            onClick={() => selectScaleType(s.key)}
+          >
+            {s.label}
+          </button>
+        ))}
+      </div>
+
+      <div className="key-row" role="tablist" aria-label="Scale root note">
+        {CHROMATIC.map((name, i) => (
+          <button
+            key={name}
+            role="tab"
+            aria-pressed={root === i}
+            className={root === i ? 'active' : ''}
+            onClick={() => selectRoot(i)}
+          >
+            {name}
+          </button>
+        ))}
+      </div>
+
+      <div className="key-summary-row">
+        <p className="sub key-summary">
+          {spelledRoot} {scale.label}
+        </p>
+        <button className="play-scale-btn" onClick={togglePlay} aria-pressed={isPlaying}>
+          {isPlaying ? '■ Stop' : '▶ Play scale'}
+        </button>
+      </div>
+
+      {/* Each note sits on a pair of half-columns and each step on the pair
+          straddling the boundary between two notes, so a step reads as the
+          distance from the note on its left to the note on its right. */}
+      <div
+        className="scale-steps"
+        style={{ gridTemplateColumns: `repeat(${climb.length * 2}, 1.5rem)` }}
+        aria-label={`${spelledRoot} ${scale.label}: ${spelled.join(' ')}, stepping ${pattern.join(' ')}`}
+      >
+        {pattern.map((step, i) => (
+          <span
+            key={`step-${i}`}
+            className="scale-step-gap"
+            style={{ gridRow: 1, gridColumn: `${i * 2 + 2} / span 2` }}
+          >
+            {step}
+            <span className="scale-step-line" />
+          </span>
+        ))}
+
+        {climb.map((note, i) => (
+          <span
+            key={`note-${i}`}
+            className={i === climb.length - 1 ? 'scale-step-note octave' : 'scale-step-note'}
+            style={{ gridRow: 2, gridColumn: `${i * 2 + 1} / span 2` }}
+          >
+            {note}
+          </span>
+        ))}
+      </div>
+
+      <div className="key-affect">
+        <span className="key-affect-label">Generally described as</span>
+        {character.tags.map((word) => (
+          <span key={word} className="key-affect-tag">
+            {word}
+          </span>
+        ))}
+      </div>
+
+      <p className="sub key-vibe">{character.use}</p>
+
+      <Board
+        fretCount={boardFrets}
+        renderCell={(s, f) => {
+          const noteName = noteAt(s.name, f)
+          const idx = NOTE_TO_INDEX[noteName]
+          const cell = `${s.num - 1}:${f}`
+          const inBox = boxCells ? boxCells.has(cell) : false
+          const isPlayingNote = playingPitch !== null && idx === playingPitch
+          // while a shape is being played back, only the note sounding right
+          // now lights up — the rest of the box stays visible underneath it
+          const highlighted = boxCells
+            ? stepCell
+              ? cell === stepCell
+              : inBox
+            : isPlayingNote
+          return (
+            <NoteChip
+              note={noteName}
+              freq={frequencyAt(s.midi, f)}
+              bright={s.type === 'plain'}
+              label={f === 0 ? `string ${s.num} open` : `string ${s.num} fret ${f}`}
+              outOfKey={boxCells ? !inBox : !scaleSet.has(idx)}
+              isRoot={idx === root}
+              chordActive={highlighted}
+            />
+          )
+        }}
+      />
+
+      <div className="chord-row-header">
+        <span className="tab-heading">
+          {spelledRoot} {scale.label} shapes
+        </span>
+      </div>
+
+      <div className="chord-row scale-shape-row">
+        {positions.map((p) => (
+          <ScaleDiagram
+            key={p.position}
+            position={p.position}
+            startFret={p.startFret}
+            endFret={p.endFret}
+            notes={p.notes}
+            selected={selectedPosition === p.position}
+            playingPosition={playingPosition}
+            onSelect={() => selectPosition(p.position)}
+            onStep={setBoxStep}
+            onPlayStart={setPlayingPosition}
+          />
+        ))}
+      </div>
+
+      <p className="sub scale-position-note">
+        A position is a few frets' worth of neck where your hand stays put — every note of the
+        scale you can reach without shifting out of that spot. Position 1 sits on the root on your
+        low E string and each one after it starts on the next scale degree up that same string, so
+        neighbouring boxes overlap and chain together along the neck. The shapes themselves don't
+        change with the key: learn these {positions.length} and you can slide them to any root.
+      </p>
+
+      <div className="scale-shape-actions">
+        <button className="reset-btn" onClick={clearPosition} disabled={selectedPosition === null}>
+          Clear selection
+        </button>
+        {selectedPosition !== null && (
+          <span className="scale-shape-selected">Position {selectedPosition} is on the neck</span>
+        )}
+      </div>
+    </>
+  )
+}
+
+function ModesTab() {
+  const [section, setSection] = useState('listen')
+
+  return (
+    <>
+      <div className="tabs interval-mode-tabs" role="tablist" aria-label="Modes section">
+        <button
+          role="tab"
+          aria-selected={section === 'listen'}
+          className={section === 'listen' ? 'active' : ''}
+          onClick={() => setSection('listen')}
+        >
+          Listen
+        </button>
+      </div>
+
+      {section === 'listen' && <ModeListenSection />}
+    </>
+  )
+}
+
+function ModeListenSection() {
+  const [root, setRoot] = useState(0) // pitch class, defaults to C
+  const [activeMode, setActiveMode] = useState(MODES[0])
+  const [expandedName, setExpandedName] = useState(null)
+  const [playingName, setPlayingName] = useState(null)
+  const [soundingCell, setSoundingCell] = useState(null) // the one string/fret sounding
+  const timeoutsRef = useRef([])
+  const activeNotesRef = useRef([])
+
+  useEffect(() => () => stopPlayback(), [])
+
+  // every mode gets its root-position box, the shape you'd actually play it in
+  const boxes = new Map(MODES.map((m) => [m.name, scalePositions(root, m)[0]]))
+  const activeBox = boxes.get(activeMode.name)
+  const activeCells = new Set(activeBox.notes.map(cellKey))
+
+  const { notes, parentKey } = spellMode(root, activeMode)
+  // the tonic as this mode actually writes it — A# Lydian reads as Bb Lydian
+  const rootName = notes[0]
+
+  function stopPlayback() {
+    timeoutsRef.current.forEach(clearTimeout)
+    timeoutsRef.current = []
+    activeNotesRef.current.forEach((n) => n.stop())
+    activeNotesRef.current = []
+    setPlayingName(null)
+    setSoundingCell(null)
+  }
+
+  // plays the shape itself, note for note up the box, rather than an abstract
+  // run of the mode — so what you hear is exactly what's lit on the neck
+  function playMode(mode) {
+    stopPlayback() // one mode at a time, so a new pick cuts off the last
+    setPlayingName(mode.name)
+    const sequence = ascendingNotes(boxes.get(mode.name).notes)
+    sequence.forEach((note, i) => {
+      const t = setTimeout(() => {
+        setSoundingCell(cellKey(note))
+        activeNotesRef.current.push(
+          pluck(frequencyForMidi(note.midi), {
+            bright: STRINGS[note.stringIndex].type === 'plain',
+          }),
+        )
+      }, i * SHAPE_NOTE_GAP_MS)
+      timeoutsRef.current.push(t)
+    })
+    const endT = setTimeout(() => {
+      activeNotesRef.current = []
+      timeoutsRef.current = []
+      setPlayingName(null)
+      setSoundingCell(null)
+    }, sequence.length * SHAPE_NOTE_GAP_MS)
+    timeoutsRef.current.push(endT)
+  }
+
+  function selectMode(mode) {
+    setActiveMode(mode)
+    setExpandedName((prev) => (prev === mode.name ? null : mode.name))
+    playMode(mode)
+  }
+
+  function selectRoot(pitchClass) {
+    stopPlayback()
+    setRoot(pitchClass)
+  }
+
+  return (
+    <>
+      <div className="key-row" role="tablist" aria-label="Mode root note">
+        {CHROMATIC.map((name, i) => (
+          <button
+            key={name}
+            role="tab"
+            aria-pressed={root === i}
+            className={root === i ? 'active' : ''}
+            onClick={() => selectRoot(i)}
+          >
+            {name}
+          </button>
+        ))}
+      </div>
+
+      <div className="key-summary-row">
+        <p className="sub key-summary">
+          {rootName} {activeMode.name} — {notes.join(' ')} — the{' '}
+          <span className="tuning">{activeMode.ordinal}</span> mode of{' '}
+          <span className="tuning">{parentKey} major</span>
+        </p>
+      </div>
+
+      <Board
+        fretCount={Math.max(FRET_COUNT, activeBox.endFret)}
+        renderCell={(s, f) => {
+          const noteName = noteAt(s.name, f)
+          const idx = NOTE_TO_INDEX[noteName]
+          const cell = `${s.num - 1}:${f}`
+          const inBox = activeCells.has(cell)
+          return (
+            <NoteChip
+              note={noteName}
+              freq={frequencyAt(s.midi, f)}
+              bright={s.type === 'plain'}
+              label={f === 0 ? `string ${s.num} open` : `string ${s.num} fret ${f}`}
+              outOfKey={!inBox}
+              isRoot={idx === root}
+              chordActive={soundingCell === cell}
+            />
+          )
+        }}
+      />
+
+      <ul className="interval-list mode-list">
+        {MODES.map((mode) => {
+          const expanded = expandedName === mode.name
+          const spelling = spellMode(root, mode)
+          const box = boxes.get(mode.name)
+          return (
+            <li key={mode.name} className={expanded ? 'expanded' : ''}>
+              <button
+                className={
+                  playingName === mode.name
+                    ? 'interval-list-row mode-row playing'
+                    : 'interval-list-row mode-row'
+                }
+                aria-expanded={expanded}
+                onClick={() => selectMode(mode)}
+              >
+                <ShapeGrid
+                  startFret={box.startFret}
+                  endFret={box.endFret}
+                  notes={box.notes}
+                  soundingKey={playingName === mode.name ? soundingCell : null}
+                />
+                <span className="mode-row-text">
+                  <span className="interval-list-name">{mode.name}</span>
+                  <span className="interval-list-semitones">
+                    {mode.ordinal} mode · {mode.signature} ·{' '}
+                    {box.startFret === 0 ? 'open' : `${box.startFret}fr`}
+                  </span>
+                </span>
+                <span className="interval-list-play">
+                  {playingName === mode.name ? '♪ Playing' : '▶ Play'}
+                </span>
+              </button>
+              {expanded && (
+                <div className="interval-detail">
+                  <span className="interval-detail-mood">{mode.mood}</span>
+                  <p className="interval-detail-text">{mode.description}</p>
+                  <p className="interval-detail-text mode-detail-notes">
+                    {spelling.notes[0]} {mode.name}:{' '}
+                    <span className="tuning">{spelling.notes.join(' ')}</span> — the {mode.ordinal}{' '}
+                    mode of {spelling.parentKey} major
+                  </p>
+                </div>
+              )}
+            </li>
+          )
+        })}
+      </ul>
     </>
   )
 }

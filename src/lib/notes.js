@@ -20,7 +20,7 @@ export const STRINGS = [
 ]
 
 export const FRET_COUNT = 12
-export const MARKERS = { 3: 1, 5: 1, 7: 1, 9: 1, 12: 2 }
+export const MARKERS = { 3: 1, 5: 1, 7: 1, 9: 1, 12: 2, 15: 1, 17: 1, 19: 1, 21: 1, 24: 2 }
 
 export function noteAt(openName, fret) {
   const startIdx = CHROMATIC.indexOf(openName)
@@ -29,11 +29,15 @@ export function noteAt(openName, fret) {
 }
 
 // Real fret spacing: distance from nut to fret n = L * (1 - 1/2^(n/12)).
-// Returns the proportional width of the space between fret n-1 and fret n,
-// suitable for use directly as a CSS flex-grow value.
+// Returns how much of the neck is used up by the time you reach fret n.
+export function neckSpan(n) {
+  return (1 - 1 / Math.pow(2, n / 12)) * 1000
+}
+
+// The proportional width of the space between fret n-1 and fret n, suitable
+// for use directly as a CSS flex-grow value.
 export function fretGrow(n) {
-  const pos = (f) => 1 - 1 / Math.pow(2, f / 12)
-  return (pos(n) - pos(n - 1)) * 1000
+  return neckSpan(n) - neckSpan(n - 1)
 }
 
 export function isNatural(note) {
@@ -104,18 +108,22 @@ export function majorScaleIndices(root) {
 const LETTERS = ['C', 'D', 'E', 'F', 'G', 'A', 'B']
 const NATURAL_INDEX = { C: 0, D: 2, E: 4, F: 5, G: 7, A: 9, B: 11 }
 
-// the correctly spelled 7 notes of a major scale (each letter used exactly
+// the correctly spelled notes of a 7-step scale (each letter used exactly
 // once, so F major reads as Bb not A#, Db major reads as Gb not F#, etc.)
-export function spellMajorScale(rootName) {
+export function spellScale(rootName, steps) {
   const rootLetter = rootName[0]
   const rootIndex = NOTE_TO_INDEX[rootName]
   const startPos = LETTERS.indexOf(rootLetter)
 
-  return MAJOR_SCALE_STEPS.map((step, i) => {
+  return steps.map((step, i) => {
     const letter = LETTERS[(startPos + i) % 7]
     const expected = (rootIndex + step) % 12
     const diff = (expected - NATURAL_INDEX[letter] + 12) % 12
     const accidental = diff === 1 ? '#' : diff === 11 ? 'b' : diff === 2 ? '##' : diff === 10 ? 'bb' : ''
     return letter + accidental
   })
+}
+
+export function spellMajorScale(rootName) {
+  return spellScale(rootName, MAJOR_SCALE_STEPS)
 }
