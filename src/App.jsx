@@ -29,6 +29,13 @@ import SCALE_CHARACTER from './lib/scaleCharacter.js'
 import MODES, { spellMode } from './lib/modes.js'
 import ScaleDiagram from './components/ScaleDiagram.jsx'
 import ShapeGrid, { ascendingNotes, cellKey, SHAPE_NOTE_GAP_MS } from './components/ShapeGrid.jsx'
+import {
+  CHORD_QUALITIES,
+  chordPositions,
+  spellTriad,
+  voicingCells,
+  voicingRootString,
+} from './lib/chordPositions.js'
 import './App.css'
 
 function MuteToggle() {
@@ -115,6 +122,14 @@ export default function App() {
           >
             Modes
           </button>
+          <button
+            role="tab"
+            aria-selected={tab === 'positions'}
+            className={tab === 'positions' ? 'active' : ''}
+            onClick={() => setTab('positions')}
+          >
+            Positions
+          </button>
         </div>
 
         {tab === 'quiz' && (
@@ -150,6 +165,12 @@ export default function App() {
             root to hear what separates them.
           </p>
         )}
+        {tab === 'positions' && (
+          <p className="sub">
+            Pick a root to see every note of its chord across the neck, then work through the five
+            places you can play that same chord, from the nut up.
+          </p>
+        )}
       </header>
 
       {tab === 'reference' && <ReferenceTab />}
@@ -158,6 +179,7 @@ export default function App() {
       {tab === 'intervals' && <IntervalsTab />}
       {tab === 'scales' && <ScalesTab />}
       {tab === 'modes' && <ModesTab />}
+      {tab === 'positions' && <PositionsTab />}
       </div>
     </>
   )
@@ -1209,6 +1231,152 @@ function ModeListenSection() {
           )
         })}
       </ul>
+    </>
+  )
+}
+
+const STRUM_GAP_MS = 35
+
+function PositionsTab() {
+  const [root, setRoot] = useState(0) // pitch class, defaults to C
+  const [quality, setQuality] = useState('major')
+  const [selectedPosition, setSelectedPosition] = useState(null)
+
+  const chord = CHORD_QUALITIES[quality]
+  const triad = spellTriad(CHROMATIC[root], quality)
+  // how the root is actually written for this chord — A# major reads as Bb
+  const chordName = triad[0] + chord.suffix
+  const chordPitches = new Set(triad.map((note) => NOTE_TO_INDEX[note]))
+  const positions = chordPositions(root, quality)
+  const boardFrets = Math.max(FRET_COUNT, ...positions.map((p) => p.endFret))
+
+  // a selected position takes over the neck, the same way a selected chord
+  // does in the Keys tab — everything outside that voicing fades out
+  const voicing = selectedPosition !== null ? positions[selectedPosition - 1] : null
+  const cells = voicing ? voicingCells(voicing.frets) : null
+  const rootString = voicing ? voicingRootString(voicing.frets) : -1
+
+  // low string to high, a quick downstroke
+  function strum(frets) {
+    ;[5, 4, 3, 2, 1, 0]
+      .filter((i) => frets[i] !== 'x')
+      .forEach((i, seq) => {
+        const string = STRINGS[i]
+        setTimeout(
+          () => pluck(frequencyForMidi(string.midi + frets[i]), { bright: string.type === 'plain' }),
+          seq * STRUM_GAP_MS,
+        )
+      })
+  }
+
+  function selectRoot(pitchClass) {
+    setRoot(pitchClass)
+    setSelectedPosition(null)
+    strum(chordPositions(pitchClass, quality)[0].frets)
+  }
+
+  function selectQuality(key) {
+    setQuality(key)
+    setSelectedPosition(null)
+    strum(chordPositions(root, key)[0].frets)
+  }
+
+  // the diagram strums itself on click, so this only has to move the neck
+  function selectPosition(position) {
+    setSelectedPosition((prev) => (prev === position ? null : position))
+  }
+
+  return (
+    <>
+      <div className="tabs interval-mode-tabs" role="tablist" aria-label="Chord quality">
+        {Object.values(CHORD_QUALITIES).map((q) => (
+          <button
+            key={q.key}
+            role="tab"
+            aria-selected={quality === q.key}
+            className={quality === q.key ? 'active' : ''}
+            onClick={() => selectQuality(q.key)}
+          >
+            {q.label}
+          </button>
+        ))}
+      </div>
+
+      <div className="key-row" role="tablist" aria-label="Chord root note">
+        {CHROMATIC.map((name, i) => (
+          <button
+            key={name}
+            role="tab"
+            aria-pressed={root === i}
+            className={root === i ? 'active' : ''}
+            onClick={() => selectRoot(i)}
+          >
+            {name}
+          </button>
+        ))}
+      </div>
+
+      <div className="key-summary-row">
+        <p className="sub key-summary">
+          {triad[0]} {chord.label} — {triad.join(' ')} — <span className="tuning">{chord.degrees.join(' ')}</span>
+        </p>
+      </div>
+
+      <Board
+        fretCount={boardFrets}
+        renderCell={(s, f) => {
+          const noteName = noteAt(s.name, f)
+          const idx = NOTE_TO_INDEX[noteName]
+          const stringIndex = s.num - 1
+          const inVoicing = cells ? cells.has(`${stringIndex}:${f}`) : false
+          return (
+            <NoteChip
+              note={noteName}
+              freq={frequencyAt(s.midi, f)}
+              bright={s.type === 'plain'}
+              label={f === 0 ? `string ${s.num} open` : `string ${s.num} fret ${f}`}
+              outOfKey={cells ? !inVoicing : !chordPitches.has(idx)}
+              isRoot={idx === root}
+              chordActive={inVoicing}
+              isChordRoot={inVoicing && stringIndex === rootString}
+            />
+          )
+        }}
+      />
+
+      <div className="chord-row-header">
+        <span className="tab-heading">{chordName} positions</span>
+        <button
+          className="reset-btn"
+          onClick={() => setSelectedPosition(null)}
+          disabled={selectedPosition === null}
+        >
+          Clear selection
+        </button>
+      </div>
+
+      <div className="chord-row">
+        {positions.map((p) => (
+          <ChordDiagram
+            key={`${quality}-${root}-${p.shape}`}
+            roman={`Position ${p.position}`}
+            name={chordName}
+            root={triad[0]}
+            frets={p.frets}
+            caption={`${p.shape} shape · ${p.startFret === 0 ? 'open' : `${p.startFret}fr`}`}
+            selected={selectedPosition === p.position}
+            onSelect={() => selectPosition(p.position)}
+          />
+        ))}
+      </div>
+
+      <p className="sub scale-position-note">
+        These five are the CAGED shapes — the open C, A, G, E and D chords, each slid up the neck
+        until it lands on {chordName}. Every one is the same three notes, just voiced in a different
+        spot, and each shape's top end overlaps the next one's bottom, so together they chain
+        {' '}from the nut to around the 12th fret and beyond. Press and hold a diagram to hear it
+        arpeggiated.
+      </p>
     </>
   )
 }

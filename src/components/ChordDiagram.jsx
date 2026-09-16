@@ -6,7 +6,15 @@ const FRET_WINDOW = 4
 const HOLD_THRESHOLD_MS = 250
 const ARPEGGIO_GAP_MS = 110
 
-export default function ChordDiagram({ roman, name, root, frets, selected = false, onSelect = () => {} }) {
+export default function ChordDiagram({
+  roman,
+  name,
+  root,
+  frets,
+  caption = null,
+  selected = false,
+  onSelect = () => {},
+}) {
   const [arpeggiating, setArpeggiating] = useState(false)
   const holdTimerRef = useRef(null)
   const arpTimeoutsRef = useRef([])
@@ -18,7 +26,11 @@ export default function ChordDiagram({ roman, name, root, frets, selected = fals
 
   const numericFrets = lowToHigh.filter((f) => typeof f === 'number' && f > 0)
   const minFret = numericFrets.length ? Math.min(...numericFrets) : 1
-  const startFret = minFret <= 1 ? 1 : minFret
+  const maxFret = numericFrets.length ? Math.max(...numericFrets) : 1
+  // a shape with open strings is played against the nut, so it's drawn from
+  // fret 1 whenever it fits — an open G is 2nd and 3rd fret, not "2fr"
+  const hasOpenString = lowToHigh.includes(0)
+  const startFret = minFret <= 1 || (hasOpenString && maxFret <= FRET_WINDOW) ? 1 : minFret
 
   // the root is always the lowest-pitched string actually played, since
   // every shape here is a standard root-position voicing
@@ -105,6 +117,7 @@ export default function ChordDiagram({ roman, name, root, frets, selected = fals
       <div className="chord-diagram-name">
         <span className="roman">{roman}</span>
         {name}
+        {caption && <span className="scale-diagram-fret">{caption}</span>}
       </div>
 
       <div className="chord-markers">
